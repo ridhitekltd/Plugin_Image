@@ -3,14 +3,20 @@
     xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>com.ridhitek</groupId>
-        <artifactId>ridhitek-parent</artifactId>
-        <version>1.0.0</version>
-        <relativePath>../pom.xml</relativePath>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.1</version>
+        <relativePath/> <!-- lookup parent from repository -->
     </parent>
+    <groupId>com.ridhitek</groupId>
     <artifactId>ridhitek-image-plugin</artifactId>
+    <version>1.0.0</version>
     <name>ridhitek-image-plugin</name>
     <description>Ridhitek Image Verification Plugin</description>
+
+    <properties>
+        <java.version>21</java.version>
+    </properties>
 
     <dependencies>
         <dependency>
