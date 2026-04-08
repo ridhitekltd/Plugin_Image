@@ -15,13 +15,13 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
-import java.util.List;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 @Transactional
-public class ImageVerificationService {
+public class ImageVerificationService implements IImageVerificationService {
 
     @Autowired
     private VerificationRepository verificationRepository;
@@ -32,53 +32,140 @@ public class ImageVerificationService {
     @Autowired
     private StorageService storageService;
 
-    // --- Status & Lists ---
-
+    @Override
     public List<VerificationResultDto> getUnverifiedCandidates() {
         return verificationRepository.findByVerificationStatusNot("VERIFIED").stream()
                 .map(this::mapToDto).collect(Collectors.toList());
     }
 
+    @Override
     public List<VerificationResultDto> getVerifiedCandidates() {
         return verificationRepository.findByVerificationStatus("VERIFIED").stream()
                 .map(this::mapToDto).collect(Collectors.toList());
     }
 
+    @Override
     public VerificationResultDto getVerificationStatus(String candidateId) {
         return verificationRepository.findById(candidateId)
                 .map(this::mapToDto)
                 .orElseGet(() -> VerificationResultDto.builder().candidateId(candidateId).verificationStatus("NOT_STARTED").build());
     }
 
-    // --- Photo Uploads ---
-
-    public VerificationResultDto uploadPhoto(String candidateId, String stage, MultipartFile file) throws IOException {
-        String filePath = storageService.uploadFile(candidateId, stage, file);
-        
+    @Override
+    public VerificationResultDto updateVerificationStatus(String candidateId, VerificationResultDto resultDto) {
         VerificationResult result = verificationRepository.findById(candidateId)
-                .orElse(new VerificationResult());
-        result.setCandidateId(candidateId);
+                .orElse(VerificationResult.builder().candidateId(candidateId).build());
+        result.setVerificationStatus(resultDto.getVerificationStatus());
+        result.setUpdatedAt(LocalDateTime.now());
+        return mapToDto(verificationRepository.save(result));
+    }
+
+    @Override
+    public List<VerificationResultDto> bulkUpdateVerificationStatus(List<VerificationResultDto> results) {
+        return results.stream()
+                .map(r -> updateVerificationStatus(r.getCandidateId(), r))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<Object[]> getVerificationStatusCounts() {
+        return verificationRepository.getVerificationStatusCounts();
+    }
+
+    @Override
+    public Map<String, Object> uploadPhotos(String candidateId, String stage, String selectedIdType, 
+                                           MultipartFile[] idImages, MultipartFile[] screenshots, 
+                                           MultipartFile[] l1Images, MultipartFile[] l2Images, 
+                                           MultipartFile[] l3Images) {
+        log.info("Deep upload for candidate {}: stage={}", candidateId, stage);
+        List<String> uploadedFiles = new ArrayList<>();
+
+        if (idImages != null) {
+            for (MultipartFile f : idImages) uploadedFiles.add("ID: " + uploadSingleFile(candidateId, "id", f));
+        }
+        if (screenshots != null) {
+            for (MultipartFile f : screenshots) uploadedFiles.add("Candidate: " + uploadSingleFile(candidateId, "candidate", f));
+        }
+        if (l1Images != null) {
+            for (MultipartFile f : l1Images) uploadedFiles.add("L1: " + uploadSingleFile(candidateId, "l1", f));
+        }
+        if (l2Images != null) {
+            for (MultipartFile f : l2Images) uploadedFiles.add("L2: " + uploadSingleFile(candidateId, "l2", f));
+        }
+        if (l3Images != null) {
+            for (MultipartFile f : l3Images) uploadedFiles.add("L3: " + uploadSingleFile(candidateId, "l3", f));
+        }
+
+        VerificationResult result = verificationRepository.findById(candidateId)
+                .orElse(VerificationResult.builder().candidateId(candidateId).build());
         result.setVerificationStatus("PENDING_VERIFICATION");
         result.setUpdatedAt(LocalDateTime.now());
+        verificationRepository.save(result);
 
-        switch (stage.toLowerCase()) {
-            case "id" -> result.setGovernmentIdPath(filePath);
-            case "candidate" -> result.setCandidatePhotoPath(filePath);
-            case "l1" -> result.setL1PhotoPath(filePath);
-            case "l2" -> result.setL2PhotoPath(filePath);
-            case "l3" -> result.setL3PhotoPath(filePath);
+        Map<String, Object> response = new HashMap<>();
+        response.put("candidateId", candidateId);
+        response.put("uploadedFiles", uploadedFiles);
+        return response;
+    }
+
+    @Override
+    public VerificationResultDto uploadPhoto(String candidateId, String stage, MultipartFile file) {
+        log.info("Single photo upload for candidate {}: stage={}", candidateId, stage);
+        String filePath;
+        try {
+            filePath = storageService.uploadFile(candidateId, stage, file);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to upload file", e);
+        }
+
+        VerificationResult result = verificationRepository.findById(candidateId)
+                .orElse(VerificationResult.builder().candidateId(candidateId).build());
+
+        String lowerStage = stage.toLowerCase();
+        if (lowerStage.contains("id") || lowerStage.contains("government")) {
+            result.setGovernmentIdPath(filePath);
+        } else if (lowerStage.contains("candidate") || lowerStage.contains("photo")) {
+            result.setCandidatePhotoPath(filePath);
+        } else if (lowerStage.contains("l1")) {
+            result.setL1PhotoPath(filePath);
+        } else if (lowerStage.contains("l2")) {
+            result.setL2PhotoPath(filePath);
+        } else if (lowerStage.contains("l3")) {
+            result.setL3PhotoPath(filePath);
+        }
+
+        result.setUpdatedAt(LocalDateTime.now());
+        if (result.getVerificationStatus() == null || result.getVerificationStatus().equals("NOT_STARTED")) {
+            result.setVerificationStatus("PENDING_VERIFICATION");
         }
 
         return mapToDto(verificationRepository.save(result));
     }
 
-    // --- Overrides & History ---
+    @Override
+    public Map<String, Object> getCandidatePhotos(String candidateId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("candidateId", candidateId);
+        // Simplified for now, can list directories if needed
+        return response;
+    }
 
+    @Override
+    public String uploadSingleFile(String candidateId, String subFolder, MultipartFile file) {
+        try {
+            return storageService.uploadFile(candidateId, subFolder, file);
+        } catch (IOException e) {
+            throw new RuntimeException("Upload failed", e);
+        }
+    }
+
+    @Override
     public List<VerificationOverrideDto> getVerificationHistory(String candidateId) {
         return overrideRepository.findByCandidateIdOrderByCreatedAtDesc(candidateId).stream()
                 .map(this::mapToOverrideDto).collect(Collectors.toList());
     }
 
+    @Override
     public VerificationResultDto overrideVerificationStatus(VerificationOverrideRequestDto request, String auditorId) {
         VerificationResult result = verificationRepository.findById(request.getCandidateId())
                 .orElseThrow(() -> new RuntimeException("Candidate verification not found"));
@@ -87,7 +174,6 @@ public class ImageVerificationService {
         result.setVerificationStatus(request.getNewStatus());
         result.setUpdatedAt(LocalDateTime.now());
         
-        // Log history
         VerificationOverride override = new VerificationOverride();
         override.setCandidateId(request.getCandidateId());
         override.setOldStatus(oldStatus);
@@ -99,20 +185,6 @@ public class ImageVerificationService {
 
         return mapToDto(verificationRepository.save(result));
     }
-
-    // --- Bulk Operations ---
-
-    public List<VerificationResultDto> bulkUpdateVerificationStatus(List<VerificationResultDto> results) {
-        return results.stream().map(dto -> {
-            VerificationResult result = verificationRepository.findById(dto.getCandidateId()).orElse(new VerificationResult());
-            result.setCandidateId(dto.getCandidateId());
-            result.setVerificationStatus(dto.getVerificationStatus());
-            result.setUpdatedAt(LocalDateTime.now());
-            return mapToDto(verificationRepository.save(result));
-        }).collect(Collectors.toList());
-    }
-
-    // --- Mappings ---
 
     private VerificationResultDto mapToDto(VerificationResult entity) {
         return VerificationResultDto.builder()
