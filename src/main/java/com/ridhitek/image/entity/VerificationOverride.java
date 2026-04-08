@@ -2,11 +2,13 @@ package com.ridhitek.image.entity;
 
 import jakarta.persistence.*;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "verification_overrides")
 @Data
+@NoArgsConstructor
 public class VerificationOverride {
 
     @Id
@@ -16,18 +18,26 @@ public class VerificationOverride {
     @Column(name = "candidate_id", nullable = false)
     private String candidateId;
 
+    @Column(name = "tenant_id")
+    private String tenantId;
+
     @Column(name = "old_status")
     private String oldStatus;
 
-    @Column(name = "new_status", nullable = false)
+    @Column(name = "new_status")
     private String newStatus;
 
-    @Column(name = "override_reason")
+    @Column(name = "override_reason", length = 1000)
     private String overrideReason;
 
-    @Column(name = "auditor_id")
-    private String auditorId;
+    @Column(name = "admin_user_id")
+    private String adminUserId;
 
-    @Column(name = "created_at")
-    private LocalDateTime createdAt;
+    @Column(name = "overridden_at")
+    private LocalDateTime overriddenAt;
+
+    @PrePersist
+    protected void onOverride() {
+        overriddenAt = LocalDateTime.now();
+    }
 }

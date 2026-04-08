@@ -12,9 +12,10 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class VerificationOverrideDto {
     private String candidateId;
+    private String tenantId;
     private String oldStatus;
     private String newStatus;
     private String overrideReason;
-    private String auditorId;
-    private LocalDateTime createdAt;
+    private String adminUserId;
+    private LocalDateTime overriddenAt;
 }

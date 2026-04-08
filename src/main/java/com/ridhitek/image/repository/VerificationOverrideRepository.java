@@ -8,5 +8,5 @@ import java.util.List;
 
 @Repository
 public interface VerificationOverrideRepository extends JpaRepository<VerificationOverride, Long> {
-    List<VerificationOverride> findByCandidateIdOrderByCreatedAtDesc(String candidateId);
+    List<VerificationOverride> findByCandidateIdOrderByOverriddenAtDesc(String candidateId);
 }

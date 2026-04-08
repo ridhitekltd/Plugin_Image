@@ -55,6 +55,13 @@ public class ImageVerificationController {
         return ResponseEntity.ok(imageService.getVerificationHistory(candidateId));
     }
 
+    @GetMapping("/photos/{candidateId}")
+    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN')")
+    public ResponseEntity<Map<String, Object>> getCandidatePhotos(@PathVariable String candidateId) {
+        log.info("Request for candidate photos: {}", candidateId);
+        return ResponseEntity.ok(imageService.getCandidatePhotos(candidateId));
+    }
+
     // --- Photo Uploads ---
 
     @PostMapping("/{candidateId}/upload/{stage}")
