@@ -209,25 +209,33 @@ public class ImageVerificationService implements IImageVerificationService {
         return mapToDto(result);
     }
 
+    private Double formatMatchScore(Double score) {
+        if (score == null) return null;
+        if (score <= 1.0) {
+            return score * 100.0;
+        }
+        return score;
+    }
+
     private VerificationResultDto mapToDto(VerificationResult entity) {
         return VerificationResultDto.builder()
                 .candidateId(entity.getCandidateId())
                 .tenantId(entity.getTenantId())
                 .verificationStatus(entity.getVerificationStatus())
                 .overallConfidence(entity.getOverallConfidence())
-                .matchScore(entity.getMatchScore())
+                .matchScore(formatMatchScore(entity.getMatchScore()))
                 .similarityPercentage(entity.getSimilarityPercentage())
                 .processedAt(entity.getProcessedAt())
                 .l1VerificationStatus(entity.getL1VerificationStatus())
-                .l1MatchScore(entity.getL1MatchScore())
+                .l1MatchScore(formatMatchScore(entity.getL1MatchScore()))
                 .l1SimilarityPercentage(entity.getL1SimilarityPercentage())
                 .l1ProcessedAt(entity.getL1ProcessedAt())
                 .l2VerificationStatus(entity.getL2VerificationStatus())
-                .l2MatchScore(entity.getL2MatchScore())
+                .l2MatchScore(formatMatchScore(entity.getL2MatchScore()))
                 .l2SimilarityPercentage(entity.getL2SimilarityPercentage())
                 .l2ProcessedAt(entity.getL2ProcessedAt())
                 .l3VerificationStatus(entity.getL3VerificationStatus())
-                .l3MatchScore(entity.getL3MatchScore())
+                .l3MatchScore(formatMatchScore(entity.getL3MatchScore()))
                 .l3SimilarityPercentage(entity.getL3SimilarityPercentage())
                 .l3ProcessedAt(entity.getL3ProcessedAt())
                 .build();
