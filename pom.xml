@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.ridhitek</groupId>
     <artifactId>ridhitek-image-plugin</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <name>ridhitek-image-plugin</name>
     <description>Ridhitek Image Verification Plugin</description>
 
