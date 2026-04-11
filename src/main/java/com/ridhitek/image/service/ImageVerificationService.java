@@ -33,6 +33,9 @@ public class ImageVerificationService implements IImageVerificationService {
 
     @Autowired
     private VerificationOverrideRepository overrideRepository;
+    
+    @Autowired(required = false)
+    private StorageService storageService;
 
     @Value("${app.image.storage.path:D:/RIVO_10-02/Images}")
     private String BASE_STORAGE_PATH;
@@ -135,15 +138,23 @@ public class ImageVerificationService implements IImageVerificationService {
     public String uploadSingleFile(String candidateId, String subFolder, MultipartFile file) {
         if (file == null || file.isEmpty()) return null;
         try {
-            // Restore folder pattern: candidate_{id}/{subFolder}
-            String folderPath = BASE_STORAGE_PATH + "/candidate_" + candidateId + "/" + subFolder;
-            File dir = new File(folderPath);
-            if (!dir.exists()) dir.mkdirs();
-            
-            String fileName = file.getOriginalFilename();
-            Path path = Paths.get(folderPath, fileName);
-            Files.write(path, file.getBytes());
-            return "candidate_" + candidateId + "/" + subFolder + "/" + fileName;
+            // Use GCS storage service if available (gcp profile), otherwise local storage
+            if (storageService != null) {
+                log.info("Uploading to GCS for candidate {}, subfolder {}", candidateId, subFolder);
+                String filePath = storageService.uploadFile(candidateId, subFolder, file);
+                return filePath;
+            } else {
+                log.info("Uploading to local storage for candidate {}, subfolder {}", candidateId, subFolder);
+                // Fallback to local storage
+                String folderPath = BASE_STORAGE_PATH + "/candidate_" + candidateId + "/" + subFolder;
+                File dir = new File(folderPath);
+                if (!dir.exists()) dir.mkdirs();
+                
+                String fileName = file.getOriginalFilename();
+                Path path = Paths.get(folderPath, fileName);
+                Files.write(path, file.getBytes());
+                return "candidate_" + candidateId + "/" + subFolder + "/" + fileName;
+            }
         } catch (IOException e) {
             log.error("Failed to upload file for candidate {}: {}", candidateId, e.getMessage());
             throw new RuntimeException("File upload failed", e);
