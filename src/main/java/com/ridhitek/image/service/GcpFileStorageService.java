@@ -45,7 +45,8 @@ public class GcpFileStorageService implements StorageService {
     @Override
     public String getFileViewUrl(String filePath) {
         // Return public URL since bucket is public
-        return imageBaseUrl + "/" + bucketName + "/" + filePath;
+        // imageBaseUrl already includes the bucket name (e.g., https://storage.googleapis.com/hireguard-images)
+        return imageBaseUrl + "/" + filePath;
     }
     
     @Override
