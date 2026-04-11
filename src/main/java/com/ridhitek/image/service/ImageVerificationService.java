@@ -175,14 +175,22 @@ public class ImageVerificationService implements IImageVerificationService {
 
     private List<String> listPhotosAsUrls(String candidateId, String subFolder) {
         try {
-            File dir = new File(BASE_STORAGE_PATH + "/candidate_" + candidateId + "/" + subFolder);
-            if (!dir.exists() || !dir.isDirectory()) return Collections.emptyList();
-            File[] files = dir.listFiles();
-            if (files == null) return Collections.emptyList();
-            return Arrays.stream(files)
-                    .filter(f -> f.isFile() && isImageFile(f.getName()))
-                    .map(f -> apiBaseUrl + "/api/image/view/candidate_" + candidateId + "/" + subFolder + "/" + f.getName())
-                    .collect(Collectors.toList());
+            // Use GCS storage service if available (gcp profile), otherwise local storage
+            if (storageService != null) {
+                log.info("Listing photos from GCS for candidate {}, subfolder {}", candidateId, subFolder);
+                return storageService.listFiles(candidateId, subFolder);
+            } else {
+                log.info("Listing photos from local storage for candidate {}, subfolder {}", candidateId, subFolder);
+                // Fallback to local filesystem listing
+                File dir = new File(BASE_STORAGE_PATH + "/candidate_" + candidateId + "/" + subFolder);
+                if (!dir.exists() || !dir.isDirectory()) return Collections.emptyList();
+                File[] files = dir.listFiles();
+                if (files == null) return Collections.emptyList();
+                return Arrays.stream(files)
+                        .filter(f -> f.isFile() && isImageFile(f.getName()))
+                        .map(f -> apiBaseUrl + "/api/image/view/candidate_" + candidateId + "/" + subFolder + "/" + f.getName())
+                        .collect(Collectors.toList());
+            }
         } catch (Exception e) {
             log.error("Error listing photos for candidate {}", candidateId, e);
             return Collections.emptyList();

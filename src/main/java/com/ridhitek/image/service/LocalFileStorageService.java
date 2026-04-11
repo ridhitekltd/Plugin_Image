@@ -11,6 +11,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -39,5 +44,28 @@ public class LocalFileStorageService implements StorageService {
     public String getFileViewUrl(String filePath) {
         // Return URL for the backend's image serving endpoint
         return appBaseUrl + "/api/image/view/" + filePath;
+    }
+    
+    @Override
+    public List<String> listFiles(String candidateId, String stage) {
+        try {
+            File dir = new File(baseDir + "/" + candidateId + "/" + stage);
+            if (!dir.exists() || !dir.isDirectory()) return Collections.emptyList();
+            File[] files = dir.listFiles();
+            if (files == null) return Collections.emptyList();
+            return Arrays.stream(files)
+                    .filter(f -> f.isFile() && isImageFile(f.getName()))
+                    .map(f -> getFileViewUrl(candidateId + "/" + stage + "/" + f.getName()))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.error("Error listing local files for {}/{}: {}", candidateId, stage, e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+    
+    private boolean isImageFile(String fileName) {
+        String lower = fileName.toLowerCase();
+        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || 
+               lower.endsWith(".png") || lower.endsWith(".webp");
     }
 }
