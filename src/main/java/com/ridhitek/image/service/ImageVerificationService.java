@@ -148,6 +148,18 @@ public class ImageVerificationService implements IImageVerificationService {
                 // Fallback to local storage
                 String folderPath = BASE_STORAGE_PATH + "/candidate_" + candidateId + "/" + subFolder;
                 File dir = new File(folderPath);
+                
+                // For stages, clear the folder to ensure replacement
+                String subFolderLower = subFolder.toLowerCase();
+                if (subFolderLower.equals("l1") || subFolderLower.equals("l2") || subFolderLower.equals("l3")) {
+                    if (dir.exists()) {
+                        File[] existingFiles = dir.listFiles();
+                        if (existingFiles != null) {
+                            for (File f : existingFiles) if (f.isFile()) f.delete();
+                        }
+                    }
+                }
+
                 if (!dir.exists()) dir.mkdirs();
                 
                 String fileName = file.getOriginalFilename();

@@ -31,6 +31,21 @@ public class LocalFileStorageService implements StorageService {
     @Override
     public String uploadFile(String candidateId, String stage, MultipartFile file) throws IOException {
         Path directory = Paths.get(baseDir, candidateId, stage);
+        
+        // If it's a verification stage, clear the directory first to ensure ONLY ONE image exists (Replacement)
+        String stageLower = stage.toLowerCase();
+        if (stageLower.equals("l1") || stageLower.equals("l2") || stageLower.equals("l3")) {
+            if (Files.exists(directory)) {
+                log.info("Clearing stage directory for replacement: {}", directory);
+                File[] files = directory.toFile().listFiles();
+                if (files != null) {
+                    for (File f : files) {
+                        if (f.isFile()) f.delete();
+                    }
+                }
+            }
+        }
+
         if (!Files.exists(directory)) {
             Files.createDirectories(directory);
         }

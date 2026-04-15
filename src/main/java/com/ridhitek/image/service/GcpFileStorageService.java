@@ -34,7 +34,20 @@ public class GcpFileStorageService implements StorageService {
 
     @Override
     public String uploadFile(String candidateId, String stage, MultipartFile file) throws IOException {
-        String blobName = candidateId + "/" + stage + "/" + file.getOriginalFilename();
+        String prefix = candidateId + "/" + stage + "/";
+        
+        // For verification stages, ensure only one image exists by deleting previous ones
+        String stageLower = stage.toLowerCase();
+        if (stageLower.equals("l1") || stageLower.equals("l2") || stageLower.equals("l3")) {
+            log.info("Checking for existing GCS blobs to replace in: {}", prefix);
+            Iterable<Blob> blobs = storage.list(bucketName, Storage.BlobListOption.prefix(prefix)).iterateAll();
+            for (Blob blob : blobs) {
+                log.info("Deleting existing blob for replacement: {}", blob.getName());
+                storage.delete(blob.getBlobId());
+            }
+        }
+
+        String blobName = prefix + file.getOriginalFilename();
         BlobId blobId = BlobId.of(bucketName, blobName);
         BlobInfo blobInfo = BlobInfo.newBuilder(blobId).setContentType(file.getContentType()).build();
         storage.create(blobInfo, file.getBytes());
