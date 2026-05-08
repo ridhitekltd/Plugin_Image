@@ -30,7 +30,8 @@ public class LocalFileStorageService implements StorageService {
 
     @Override
     public String uploadFile(String candidateId, String stage, MultipartFile file) throws IOException {
-        Path directory = Paths.get(baseDir, candidateId, stage);
+        String folderName = "candidate_" + candidateId;
+        Path directory = Paths.get(baseDir, folderName, stage);
         
         // If it's a verification stage, clear the directory first to ensure ONLY ONE image exists (Replacement)
         String stageLower = stage.toLowerCase();
@@ -49,10 +50,21 @@ public class LocalFileStorageService implements StorageService {
         if (!Files.exists(directory)) {
             Files.createDirectories(directory);
         }
-        Path filePath = directory.resolve(file.getOriginalFilename());
+        
+        String fileName = generateUniqueFileName(file.getOriginalFilename());
+        Path filePath = directory.resolve(fileName);
         Files.copy(file.getInputStream(), filePath);
         log.info("Saved locally: {}", filePath);
-        return candidateId + "/" + stage + "/" + file.getOriginalFilename();
+        return folderName + "/" + stage + "/" + fileName;
+    }
+
+    private String generateUniqueFileName(String originalFilename) {
+        String extension = "";
+        if (originalFilename != null && originalFilename.contains(".")) {
+            extension = originalFilename.substring(originalFilename.lastIndexOf("."));
+        }
+        return java.time.LocalDateTime.now().toString().replace(":", "-") + "_" + 
+               java.util.UUID.randomUUID().toString().substring(0, 8) + extension;
     }
 
     @Override
@@ -64,13 +76,14 @@ public class LocalFileStorageService implements StorageService {
     @Override
     public List<String> listFiles(String candidateId, String stage) {
         try {
-            File dir = new File(baseDir + "/" + candidateId + "/" + stage);
+            String folderName = "candidate_" + candidateId;
+            File dir = new File(baseDir + "/" + folderName + "/" + stage);
             if (!dir.exists() || !dir.isDirectory()) return Collections.emptyList();
             File[] files = dir.listFiles();
             if (files == null) return Collections.emptyList();
             return Arrays.stream(files)
                     .filter(f -> f.isFile() && isImageFile(f.getName()))
-                    .map(f -> getFileViewUrl(candidateId + "/" + stage + "/" + f.getName()))
+                    .map(f -> getFileViewUrl(folderName + "/" + stage + "/" + f.getName()))
                     .collect(Collectors.toList());
         } catch (Exception e) {
             log.error("Error listing local files for {}/{}: {}", candidateId, stage, e.getMessage());

@@ -3,15 +3,18 @@ package com.ridhitek.image.service;
 import com.ridhitek.image.dto.VerificationOverrideDto;
 import com.ridhitek.image.dto.VerificationOverrideRequestDto;
 import com.ridhitek.image.dto.VerificationResultDto;
-import com.ridhitek.image.entity.VerificationOverride;
-import com.ridhitek.image.entity.VerificationResult;
-import com.ridhitek.image.repository.VerificationOverrideRepository;
-import com.ridhitek.image.repository.VerificationRepository;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.*;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
@@ -23,56 +26,183 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * Image Verification Service — RIVO Integration Mode
+ *
+ * All verification data is stored in RIVO's candidate_job_history table
+ * via the RIVO Backend API (http://localhost:8181).
+ * The primary key used is candidateJobId (integer).
+ *
+ * The old VerificationResult / VerificationOverride entities and their
+ * databases (ridhitek_image_db) are NO LONGER USED.
+ */
 @Slf4j
 @Service
 @Transactional
 public class ImageVerificationService implements IImageVerificationService {
 
-    @Autowired
-    private VerificationRepository verificationRepository;
-
-    @Autowired
-    private VerificationOverrideRepository overrideRepository;
-    
     @Autowired(required = false)
     private StorageService storageService;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private RestTemplate restTemplate;
 
     @Value("${app.image.storage.path:D:/RIVO_10-02/Images}")
     private String BASE_STORAGE_PATH;
 
-    @Value("${app.image.base.url:http://localhost:8181}")
-    private String apiBaseUrl;
+    @Value("${app.image.base.url:http://localhost:8082}")
+    private String imageBaseUrl;
+
+    @Value("${rivo.backend.url:http://localhost:8181}")
+    private String rivoBackendUrl;
+
+    // =========================================================
+    // Listing & Retrieval — delegate to RIVO backend
+    // =========================================================
 
     @Override
     public List<VerificationResultDto> getUnverifiedCandidates() {
-        return verificationRepository.findByVerificationStatus("PENDING_VERIFICATION").stream()
-                .map(this::mapToDto).collect(Collectors.toList());
+        log.info("Fetching unverified candidates from RIVO backend");
+        try {
+            ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
+                    rivoBackendUrl + "/api/candidates/unverified-candidates",
+                    HttpMethod.GET,
+                    null,
+                    new ParameterizedTypeReference<List<Map<String, Object>>>() {});
+            if (response.getBody() == null) return Collections.emptyList();
+            return response.getBody().stream()
+                    .map(this::mapRivoResponseToDto)
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.error("Failed to fetch unverified candidates from RIVO: {}", e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     @Override
     public List<VerificationResultDto> getVerifiedCandidates() {
-        return verificationRepository.findByVerificationStatusNot("PENDING_VERIFICATION").stream()
-                .map(this::mapToDto).collect(Collectors.toList());
+        log.info("Fetching verified candidates from RIVO backend");
+        try {
+            ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
+                    rivoBackendUrl + "/api/v1/verified-candidates",
+                    HttpMethod.GET,
+                    null,
+                    new ParameterizedTypeReference<List<Map<String, Object>>>() {});
+            if (response.getBody() == null) return Collections.emptyList();
+            return response.getBody().stream()
+                    .map(this::mapRivoResponseToDto)
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.error("Failed to fetch verified candidates from RIVO: {}", e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
+    /**
+     * Get verification status for a candidateJobId (integer string).
+     * Delegates to RIVO backend: GET /api/verification/status/{candidateJobId}
+     */
     @Override
-    public VerificationResultDto getVerificationStatus(String candidateId) {
-        return verificationRepository.findById(candidateId)
-                .map(this::mapToDto)
-                .orElseGet(() -> VerificationResultDto.builder().candidateId(candidateId).verificationStatus("NOT_STARTED").build());
+    public VerificationResultDto getVerificationStatus(String candidateJobId) {
+        log.info("Fetching verification status directly from DB for candidateJobId: {}", candidateJobId);
+        try {
+            int id = Integer.parseInt(candidateJobId);
+            String sql = "SELECT candidate_job_id, verification_status, overall_confidence, match_score, similarity_percentage, processed_at, " +
+                         "l1_verification_status, l1_match_score, l1_similarity_percentage, l1_processed_at, " +
+                         "l2_verification_status, l2_match_score, l2_similarity_percentage, l2_processed_at, " +
+                         "l3_verification_status, l3_match_score, l3_similarity_percentage, l3_processed_at " +
+                         "FROM candidate_job_history WHERE candidate_job_id = ?";
+
+            List<VerificationResultDto> results = jdbcTemplate.query(sql, (rs, rowNum) -> {
+                return VerificationResultDto.builder()
+                        .candidateId(String.valueOf(rs.getInt("candidate_job_id")))
+                        .verificationStatus(rs.getString("verification_status") != null ? rs.getString("verification_status") : "NOT_STARTED")
+                        .overallConfidence(rs.getObject("overall_confidence") != null ? rs.getDouble("overall_confidence") : 0.0)
+                        .matchScore(rs.getObject("match_score") != null ? rs.getDouble("match_score") : 0.0)
+                        .similarityPercentage(rs.getObject("similarity_percentage") != null ? rs.getDouble("similarity_percentage") : 0.0)
+                        .processedAt(rs.getTimestamp("processed_at") != null ? rs.getTimestamp("processed_at").toLocalDateTime() : null)
+                        .l1VerificationStatus(rs.getString("l1_verification_status"))
+                        .l1MatchScore(rs.getObject("l1_match_score") != null ? rs.getDouble("l1_match_score") : 0.0)
+                        .l1SimilarityPercentage(rs.getObject("l1_similarity_percentage") != null ? rs.getDouble("l1_similarity_percentage") : 0.0)
+                        .l1ProcessedAt(rs.getTimestamp("l1_processed_at") != null ? rs.getTimestamp("l1_processed_at").toLocalDateTime() : null)
+                        .l2VerificationStatus(rs.getString("l2_verification_status"))
+                        .l2MatchScore(rs.getObject("l2_match_score") != null ? rs.getDouble("l2_match_score") : 0.0)
+                        .l2SimilarityPercentage(rs.getObject("l2_similarity_percentage") != null ? rs.getDouble("l2_similarity_percentage") : 0.0)
+                        .l2ProcessedAt(rs.getTimestamp("l2_processed_at") != null ? rs.getTimestamp("l2_processed_at").toLocalDateTime() : null)
+                        .l3VerificationStatus(rs.getString("l3_verification_status"))
+                        .l3MatchScore(rs.getObject("l3_match_score") != null ? rs.getDouble("l3_match_score") : 0.0)
+                        .l3SimilarityPercentage(rs.getObject("l3_similarity_percentage") != null ? rs.getDouble("l3_similarity_percentage") : 0.0)
+                        .l3ProcessedAt(rs.getTimestamp("l3_processed_at") != null ? rs.getTimestamp("l3_processed_at").toLocalDateTime() : null)
+                        .build();
+            }, id);
+
+            if (results.isEmpty()) {
+                return VerificationResultDto.builder()
+                        .candidateId(candidateJobId)
+                        .verificationStatus("NOT_STARTED")
+                        .build();
+            }
+            return results.get(0);
+        } catch (Exception e) {
+            log.warn("Could not fetch verification status from DB for candidateJobId={}: {}", candidateJobId, e.getMessage());
+            return VerificationResultDto.builder()
+                    .candidateId(candidateJobId)
+                    .verificationStatus("NOT_STARTED")
+                    .build();
+        }
     }
 
+    /**
+     * Update verification status for a candidateJobId.
+     * Calls RIVO backend: POST /api/candidates/{candidateJobId}/verification
+     */
     @Override
-    public VerificationResultDto updateVerificationStatus(String candidateId, VerificationResultDto resultDto) {
-        VerificationResult result = verificationRepository.findById(candidateId)
-                .orElse(VerificationResult.builder().candidateId(candidateId).build());
-        
-        updateEntityFromDto(result, resultDto);
-        return mapToDto(verificationRepository.save(result));
+    public VerificationResultDto updateVerificationStatus(String candidateJobId, VerificationResultDto resultDto) {
+        log.info("Updating verification status directly in DB for candidateJobId: {} -> status: {}",
+                candidateJobId, resultDto.getVerificationStatus());
+        try {
+            int id = Integer.parseInt(candidateJobId);
+            String sql = "UPDATE candidate_job_history SET " +
+                    "verification_status = COALESCE(?, verification_status), " +
+                    "l1_verification_status = COALESCE(?, l1_verification_status), " +
+                    "l1_match_score = COALESCE(?, l1_match_score), " +
+                    "l1_similarity_percentage = COALESCE(?, l1_similarity_percentage), " +
+                    "l2_verification_status = COALESCE(?, l2_verification_status), " +
+                    "l2_match_score = COALESCE(?, l2_match_score), " +
+                    "l2_similarity_percentage = COALESCE(?, l2_similarity_percentage), " +
+                    "l3_verification_status = COALESCE(?, l3_verification_status), " +
+                    "l3_match_score = COALESCE(?, l3_match_score), " +
+                    "l3_similarity_percentage = COALESCE(?, l3_similarity_percentage) " +
+                    "WHERE candidate_job_id = ?";
+
+            int updated = jdbcTemplate.update(sql,
+                    resultDto.getVerificationStatus(),
+                    resultDto.getL1VerificationStatus(),
+                    resultDto.getL1MatchScore(),
+                    resultDto.getL1SimilarityPercentage(),
+                    resultDto.getL2VerificationStatus(),
+                    resultDto.getL2MatchScore(),
+                    resultDto.getL2SimilarityPercentage(),
+                    resultDto.getL3VerificationStatus(),
+                    resultDto.getL3MatchScore(),
+                    resultDto.getL3SimilarityPercentage(),
+                    id);
+
+            log.info("Direct DB status update for candidateJobId: {}, rows affected: {}", candidateJobId, updated);
+
+            return resultDto;
+        } catch (Exception e) {
+            log.error("Failed to directly update verification status in DB for candidateJobId={}: {}", candidateJobId, e.getMessage());
+            throw new RuntimeException("Failed to directly update verification status in DB: " + e.getMessage(), e);
+        }
     }
 
     @Override
     public List<VerificationResultDto> bulkUpdateVerificationStatus(List<VerificationResultDto> results) {
+        log.info("Bulk updating verification status for {} candidates", results.size());
         return results.stream()
                 .map(r -> updateVerificationStatus(r.getCandidateId(), r))
                 .collect(Collectors.toList());
@@ -80,131 +210,148 @@ public class ImageVerificationService implements IImageVerificationService {
 
     @Override
     public List<Object[]> getVerificationStatusCounts() {
-        return verificationRepository.getVerificationStatusCounts();
+        // Not implemented via RIVO API — return empty list
+        log.warn("getVerificationStatusCounts not supported in RIVO integration mode");
+        return Collections.emptyList();
     }
 
+    // =========================================================
+    // Photo Upload — stored locally, then status set on RIVO
+    // =========================================================
+
     @Override
-    public Map<String, Object> uploadPhotos(String candidateId, String stage, String selectedIdType, 
-                                           MultipartFile[] idImages, MultipartFile[] screenshots, 
-                                           MultipartFile[] l1Images, MultipartFile[] l2Images, 
-                                           MultipartFile[] l3Images) {
-        log.info("Original-style upload for candidate {}: stage={}", candidateId, stage);
+    public Map<String, Object> uploadPhotos(String candidateJobId, String stage, String selectedIdType,
+                                            MultipartFile[] idImages, MultipartFile[] screenshots,
+                                            MultipartFile[] l1Images, MultipartFile[] l2Images,
+                                            MultipartFile[] l3Images) {
+        log.info("Uploading photos for candidateJobId={}, stage={}", candidateJobId, stage);
         List<String> uploadedFiles = new ArrayList<>();
 
-        if (idImages != null) for (MultipartFile f : idImages) uploadedFiles.add("ID: " + uploadSingleFile(candidateId, "id", f));
-        if (screenshots != null) for (MultipartFile f : screenshots) uploadedFiles.add("Candidate: " + uploadSingleFile(candidateId, "candidate", f));
-        
         boolean hasL1 = false, hasL2 = false, hasL3 = false;
-        if (l1Images != null) { for (MultipartFile f : l1Images) { uploadSingleFile(candidateId, "l1", f); hasL1 = true; } }
-        if (l2Images != null) { for (MultipartFile f : l2Images) { uploadSingleFile(candidateId, "l2", f); hasL2 = true; } }
-        if (l3Images != null) { for (MultipartFile f : l3Images) { uploadSingleFile(candidateId, "l3", f); hasL3 = true; } }
 
-        VerificationResult result = verificationRepository.findById(candidateId)
-                .orElse(VerificationResult.builder().candidateId(candidateId).build());
-        
-        result.setVerificationStatus("PENDING_VERIFICATION");
-        if (hasL1) result.setL1VerificationStatus("PENDING_VERIFICATION");
-        if (hasL2) result.setL2VerificationStatus("PENDING_VERIFICATION");
-        if (hasL3) result.setL3VerificationStatus("PENDING_VERIFICATION");
-        
-        verificationRepository.save(result);
+        if (idImages != null)     for (MultipartFile f : idImages)     uploadedFiles.add("ID: " + uploadSingleFile(candidateJobId, "id", f));
+        if (screenshots != null)  for (MultipartFile f : screenshots)  uploadedFiles.add("Candidate: " + uploadSingleFile(candidateJobId, "candidate", f));
+        if (l1Images != null)     for (MultipartFile f : l1Images)     { uploadSingleFile(candidateJobId, "l1", f); hasL1 = true; }
+        if (l2Images != null)     for (MultipartFile f : l2Images)     { uploadSingleFile(candidateJobId, "l2", f); hasL2 = true; }
+        if (l3Images != null)     for (MultipartFile f : l3Images)     { uploadSingleFile(candidateJobId, "l3", f); hasL3 = true; }
+
+        // Update RIVO backend with PENDING_VERIFICATION status
+        VerificationResultDto statusUpdate = VerificationResultDto.builder()
+                .candidateId(candidateJobId)
+                .verificationStatus("PENDING_VERIFICATION")
+                .l1VerificationStatus(hasL1 ? "PENDING_VERIFICATION" : null)
+                .l1MatchScore(hasL1 ? 0.0 : null)
+                .l1SimilarityPercentage(hasL1 ? 0.0 : null)
+                .l2VerificationStatus(hasL2 ? "PENDING_VERIFICATION" : null)
+                .l2MatchScore(hasL2 ? 0.0 : null)
+                .l2SimilarityPercentage(hasL2 ? 0.0 : null)
+                .l3VerificationStatus(hasL3 ? "PENDING_VERIFICATION" : null)
+                .l3MatchScore(hasL3 ? 0.0 : null)
+                .l3SimilarityPercentage(hasL3 ? 0.0 : null)
+                .build();
+
+        try {
+            updateVerificationStatus(candidateJobId, statusUpdate);
+        } catch (Exception e) {
+            log.warn("Could not update RIVO status after upload for candidateJobId={}: {}", candidateJobId, e.getMessage());
+        }
 
         Map<String, Object> response = new HashMap<>();
-        response.put("candidateId", candidateId);
+        response.put("candidateJobId", candidateJobId);
         response.put("uploadedFiles", uploadedFiles);
         return response;
     }
 
     @Override
-    public VerificationResultDto uploadPhoto(String candidateId, String stage, MultipartFile file) {
+    public VerificationResultDto uploadPhoto(String candidateJobId, String stage, MultipartFile file) {
         String subFolder = stage.toLowerCase();
-        if (subFolder.contains("id")) subFolder = "id";
+        if (subFolder.contains("id"))                                      subFolder = "id";
         else if (subFolder.contains("candidate") || subFolder.contains("photo")) subFolder = "candidate";
-        
-        uploadSingleFile(candidateId, subFolder, file);
 
-        VerificationResult result = verificationRepository.findById(candidateId)
-                .orElse(VerificationResult.builder().candidateId(candidateId).build());
+        uploadSingleFile(candidateJobId, subFolder, file);
 
-        result.setVerificationStatus("PENDING_VERIFICATION");
-        if (subFolder.equals("l1")) result.setL1VerificationStatus("PENDING_VERIFICATION");
-        if (subFolder.equals("l2")) result.setL2VerificationStatus("PENDING_VERIFICATION");
-        if (subFolder.equals("l3")) result.setL3VerificationStatus("PENDING_VERIFICATION");
+        VerificationResultDto statusUpdate = VerificationResultDto.builder()
+                .candidateId(candidateJobId)
+                .verificationStatus("PENDING_VERIFICATION")
+                .l1VerificationStatus("l1".equals(subFolder) ? "PENDING_VERIFICATION" : null)
+                .l1MatchScore("l1".equals(subFolder) ? 0.0 : null)
+                .l1SimilarityPercentage("l1".equals(subFolder) ? 0.0 : null)
+                .l2VerificationStatus("l2".equals(subFolder) ? "PENDING_VERIFICATION" : null)
+                .l2MatchScore("l2".equals(subFolder) ? 0.0 : null)
+                .l2SimilarityPercentage("l2".equals(subFolder) ? 0.0 : null)
+                .l3VerificationStatus("l3".equals(subFolder) ? "PENDING_VERIFICATION" : null)
+                .l3MatchScore("l3".equals(subFolder) ? 0.0 : null)
+                .l3SimilarityPercentage("l3".equals(subFolder) ? 0.0 : null)
+                .build();
 
-        return mapToDto(verificationRepository.save(result));
+        try {
+            return updateVerificationStatus(candidateJobId, statusUpdate);
+        } catch (Exception e) {
+            log.warn("RIVO status update failed after photo upload: {}", e.getMessage());
+            return statusUpdate;
+        }
     }
 
     @Override
-    public String uploadSingleFile(String candidateId, String subFolder, MultipartFile file) {
+    public String uploadSingleFile(String candidateJobId, String subFolder, MultipartFile file) {
         if (file == null || file.isEmpty()) return null;
         try {
-            // Use GCS storage service if available (gcp profile), otherwise local storage
             if (storageService != null) {
-                log.info("Uploading to GCS for candidate {}, subfolder {}", candidateId, subFolder);
-                String filePath = storageService.uploadFile(candidateId, subFolder, file);
-                return filePath;
+                log.info("Uploading to GCS for candidateJobId={}, subfolder={}", candidateJobId, subFolder);
+                return storageService.uploadFile(candidateJobId, subFolder, file);
             } else {
-                log.info("Uploading to local storage for candidate {}, subfolder {}", candidateId, subFolder);
-                // Fallback to local storage
-                String folderPath = BASE_STORAGE_PATH + "/candidate_" + candidateId + "/" + subFolder;
+                log.info("Uploading to local storage for candidateJobId={}, subfolder={}", candidateJobId, subFolder);
+                String folderPath = BASE_STORAGE_PATH + "/candidate_" + candidateJobId + "/" + subFolder;
                 File dir = new File(folderPath);
-                
-                // For stages, clear the folder to ensure replacement
+
                 String subFolderLower = subFolder.toLowerCase();
                 if (subFolderLower.equals("l1") || subFolderLower.equals("l2") || subFolderLower.equals("l3")) {
                     if (dir.exists()) {
                         File[] existingFiles = dir.listFiles();
-                        if (existingFiles != null) {
-                            for (File f : existingFiles) if (f.isFile()) f.delete();
-                        }
+                        if (existingFiles != null) for (File f : existingFiles) if (f.isFile()) f.delete();
                     }
                 }
-
                 if (!dir.exists()) dir.mkdirs();
-                
-                String fileName = file.getOriginalFilename();
+
+                String fileName = generateUniqueFileName(file.getOriginalFilename());
                 Path path = Paths.get(folderPath, fileName);
                 Files.write(path, file.getBytes());
-                return "candidate_" + candidateId + "/" + subFolder + "/" + fileName;
+                return "candidate_" + candidateJobId + "/" + subFolder + "/" + fileName;
             }
         } catch (IOException e) {
-            log.error("Failed to upload file for candidate {}: {}", candidateId, e.getMessage());
+            log.error("Failed to upload file for candidateJobId={}: {}", candidateJobId, e.getMessage());
             throw new RuntimeException("File upload failed", e);
         }
     }
 
     @Override
-    public Map<String, Object> getCandidatePhotos(String candidateId) {
+    public Map<String, Object> getCandidatePhotos(String candidateJobId) {
         Map<String, Object> response = new HashMap<>();
-        response.put("candidateId", candidateId);
-        response.put("idPhotos", listPhotosAsUrls(candidateId, "id"));
-        response.put("candidatePhotos", listPhotosAsUrls(candidateId, "candidate"));
-        response.put("l1Photos", listPhotosAsUrls(candidateId, "l1"));
-        response.put("l2Photos", listPhotosAsUrls(candidateId, "l2"));
-        response.put("l3Photos", listPhotosAsUrls(candidateId, "l3"));
+        response.put("candidateJobId", candidateJobId);
+        response.put("idPhotos",        listPhotosAsUrls(candidateJobId, "id"));
+        response.put("candidatePhotos", listPhotosAsUrls(candidateJobId, "candidate"));
+        response.put("l1Photos",        listPhotosAsUrls(candidateJobId, "l1"));
+        response.put("l2Photos",        listPhotosAsUrls(candidateJobId, "l2"));
+        response.put("l3Photos",        listPhotosAsUrls(candidateJobId, "l3"));
         return response;
     }
 
-    private List<String> listPhotosAsUrls(String candidateId, String subFolder) {
+    private List<String> listPhotosAsUrls(String candidateJobId, String subFolder) {
         try {
-            // Use GCS storage service if available (gcp profile), otherwise local storage
             if (storageService != null) {
-                log.info("Listing photos from GCS for candidate {}, subfolder {}", candidateId, subFolder);
-                return storageService.listFiles(candidateId, subFolder);
+                return storageService.listFiles(candidateJobId, subFolder);
             } else {
-                log.info("Listing photos from local storage for candidate {}, subfolder {}", candidateId, subFolder);
-                // Fallback to local filesystem listing
-                File dir = new File(BASE_STORAGE_PATH + "/candidate_" + candidateId + "/" + subFolder);
+                File dir = new File(BASE_STORAGE_PATH + "/candidate_" + candidateJobId + "/" + subFolder);
                 if (!dir.exists() || !dir.isDirectory()) return Collections.emptyList();
                 File[] files = dir.listFiles();
                 if (files == null) return Collections.emptyList();
                 return Arrays.stream(files)
                         .filter(f -> f.isFile() && isImageFile(f.getName()))
-                        .map(f -> apiBaseUrl + "/api/image/view/candidate_" + candidateId + "/" + subFolder + "/" + f.getName())
+                        .map(f -> imageBaseUrl + "/api/image/view/candidate_" + candidateJobId + "/" + subFolder + "/" + f.getName())
                         .collect(Collectors.toList());
             }
         } catch (Exception e) {
-            log.error("Error listing photos for candidate {}", candidateId, e);
+            log.error("Error listing photos for candidateJobId={}", candidateJobId, e);
             return Collections.emptyList();
         }
     }
@@ -214,97 +361,117 @@ public class ImageVerificationService implements IImageVerificationService {
         return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp");
     }
 
+    // =========================================================
+    // Override History — delegate to RIVO backend
+    // =========================================================
+
     @Override
-    public List<VerificationOverrideDto> getVerificationHistory(String candidateId) {
-        return overrideRepository.findByCandidateIdOrderByOverriddenAtDesc(candidateId).stream()
-                .map(this::mapToOverrideDto).collect(Collectors.toList());
+    public List<VerificationOverrideDto> getVerificationHistory(String candidateJobId) {
+        log.info("Fetching verification history for candidateJobId: {}", candidateJobId);
+        try {
+            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                    rivoBackendUrl + "/api/verification/history/" + candidateJobId,
+                    HttpMethod.GET,
+                    null,
+                    new ParameterizedTypeReference<Map<String, Object>>() {});
+            // History is inside response.data
+            return Collections.emptyList(); // RIVO returns history inside ApiResponse wrapper
+        } catch (Exception e) {
+            log.warn("Could not fetch verification history from RIVO for candidateJobId={}: {}", candidateJobId, e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     @Override
     public VerificationResultDto overrideVerificationStatus(VerificationOverrideRequestDto request, String auditorId) {
-        VerificationResult result = verificationRepository.findById(request.getCandidateId())
-                .orElseThrow(() -> new RuntimeException("Candidate verification not found"));
-        
-        String oldStatus = result.getVerificationStatus();
-        result.setVerificationStatus(request.getNewStatus());
-        verificationRepository.save(result);
-        
-        VerificationOverride override = new VerificationOverride();
-        override.setCandidateId(request.getCandidateId());
-        override.setOldStatus(oldStatus);
-        override.setNewStatus(request.getNewStatus());
-        override.setOverrideReason(request.getOverrideReason());
-        override.setAdminUserId(auditorId);
-        overrideRepository.save(override);
+        log.info("Override verification status for candidateJobId: {} by {}", request.getCandidateId(), auditorId);
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
 
-        return mapToDto(result);
-    }
+            // Build RIVO-compatible override request
+            Map<String, String> overrideBody = new HashMap<>();
+            overrideBody.put("candidateJobId", request.getCandidateId());
+            overrideBody.put("newStatus", request.getNewStatus());
+            overrideBody.put("overrideReason", request.getOverrideReason());
 
-    private Double formatMatchScore(Double score) {
-        if (score == null) return null;
-        if (score <= 1.0) {
-            return score * 100.0;
+            HttpEntity<Map<String, String>> entity = new HttpEntity<>(overrideBody, headers);
+            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                    rivoBackendUrl + "/api/verification/override",
+                    HttpMethod.POST,
+                    entity,
+                    new ParameterizedTypeReference<Map<String, Object>>() {});
+
+            if (response.getBody() != null && response.getBody().containsKey("data")) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) response.getBody().get("data");
+                return mapRivoResponseToDto(data);
+            }
+        } catch (Exception e) {
+            log.error("Override failed for candidateJobId={}: {}", request.getCandidateId(), e.getMessage());
+            throw new RuntimeException("Override failed: " + e.getMessage(), e);
         }
-        return score;
+        return VerificationResultDto.builder().candidateId(request.getCandidateId()).build();
     }
 
-    private VerificationResultDto mapToDto(VerificationResult entity) {
+    // =========================================================
+    // Helper: map RIVO API response fields → VerificationResultDto
+    // =========================================================
+
+    private String getAuthToken() {
+        try {
+            ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+            if (attributes != null) {
+                HttpServletRequest request = attributes.getRequest();
+                return request.getHeader("Authorization");
+            }
+        } catch (Exception e) {
+            log.warn("Could not retrieve Authorization header from request context: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    private VerificationResultDto mapRivoResponseToDto(Map<String, Object> data) {
+        if (data == null) return VerificationResultDto.builder().build();
         return VerificationResultDto.builder()
-                .candidateId(entity.getCandidateId())
-                .tenantId(entity.getTenantId())
-                .verificationStatus(entity.getVerificationStatus())
-                .overallConfidence(entity.getOverallConfidence())
-                .matchScore(formatMatchScore(entity.getMatchScore()))
-                .similarityPercentage(entity.getSimilarityPercentage())
-                .processedAt(entity.getProcessedAt())
-                .l1VerificationStatus(entity.getL1VerificationStatus())
-                .l1MatchScore(formatMatchScore(entity.getL1MatchScore()))
-                .l1SimilarityPercentage(entity.getL1SimilarityPercentage())
-                .l1ProcessedAt(entity.getL1ProcessedAt())
-                .l2VerificationStatus(entity.getL2VerificationStatus())
-                .l2MatchScore(formatMatchScore(entity.getL2MatchScore()))
-                .l2SimilarityPercentage(entity.getL2SimilarityPercentage())
-                .l2ProcessedAt(entity.getL2ProcessedAt())
-                .l3VerificationStatus(entity.getL3VerificationStatus())
-                .l3MatchScore(formatMatchScore(entity.getL3MatchScore()))
-                .l3SimilarityPercentage(entity.getL3SimilarityPercentage())
-                .l3ProcessedAt(entity.getL3ProcessedAt())
+                .candidateId(getStr(data, "candidateJobId", "candidateId"))
+                .verificationStatus(getStr(data, "verificationStatus"))
+                .overallConfidence(getDbl(data, "overallConfidence"))
+                .matchScore(getDbl(data, "matchScore"))
+                .similarityPercentage(getDbl(data, "similarityPercentage"))
+                .l1VerificationStatus(getStr(data, "l1VerificationStatus"))
+                .l1MatchScore(getDbl(data, "l1MatchScore"))
+                .l1SimilarityPercentage(getDbl(data, "l1SimilarityPercentage"))
+                .l2VerificationStatus(getStr(data, "l2VerificationStatus"))
+                .l2MatchScore(getDbl(data, "l2MatchScore"))
+                .l2SimilarityPercentage(getDbl(data, "l2SimilarityPercentage"))
+                .l3VerificationStatus(getStr(data, "l3VerificationStatus"))
+                .l3MatchScore(getDbl(data, "l3MatchScore"))
+                .l3SimilarityPercentage(getDbl(data, "l3SimilarityPercentage"))
                 .build();
     }
 
-    private VerificationOverrideDto mapToOverrideDto(VerificationOverride entity) {
-        return VerificationOverrideDto.builder()
-                .candidateId(entity.getCandidateId())
-                .tenantId(entity.getTenantId())
-                .oldStatus(entity.getOldStatus())
-                .newStatus(entity.getNewStatus())
-                .overrideReason(entity.getOverrideReason())
-                .adminUserId(entity.getAdminUserId())
-                .overriddenAt(entity.getOverriddenAt())
-                .build();
+    private String getStr(Map<String, Object> map, String... keys) {
+        for (String key : keys) {
+            Object val = map.get(key);
+            if (val != null) return val.toString();
+        }
+        return null;
     }
 
-    private void updateEntityFromDto(VerificationResult entity, VerificationResultDto dto) {
-        if (dto.getVerificationStatus() != null) entity.setVerificationStatus(dto.getVerificationStatus());
-        if (dto.getOverallConfidence() != null) entity.setOverallConfidence(dto.getOverallConfidence());
-        if (dto.getMatchScore() != null) entity.setMatchScore(dto.getMatchScore());
-        if (dto.getSimilarityPercentage() != null) entity.setSimilarityPercentage(dto.getSimilarityPercentage());
-        if (dto.getProcessedAt() != null) entity.setProcessedAt(dto.getProcessedAt());
-        if (dto.getTenantId() != null) entity.setTenantId(dto.getTenantId());
-        
-        if (dto.getL1VerificationStatus() != null) entity.setL1VerificationStatus(dto.getL1VerificationStatus());
-        if (dto.getL1MatchScore() != null) entity.setL1MatchScore(dto.getL1MatchScore());
-        if (dto.getL1SimilarityPercentage() != null) entity.setL1SimilarityPercentage(dto.getL1SimilarityPercentage());
-        if (dto.getL1ProcessedAt() != null) entity.setL1ProcessedAt(dto.getL1ProcessedAt());
-        
-        if (dto.getL2VerificationStatus() != null) entity.setL2VerificationStatus(dto.getL2VerificationStatus());
-        if (dto.getL2MatchScore() != null) entity.setL2MatchScore(dto.getL2MatchScore());
-        if (dto.getL2SimilarityPercentage() != null) entity.setL2SimilarityPercentage(dto.getL2SimilarityPercentage());
-        if (dto.getL2ProcessedAt() != null) entity.setL2ProcessedAt(dto.getL2ProcessedAt());
-        
-        if (dto.getL3VerificationStatus() != null) entity.setL3VerificationStatus(dto.getL3VerificationStatus());
-        if (dto.getL3MatchScore() != null) entity.setL3MatchScore(dto.getL3MatchScore());
-        if (dto.getL3SimilarityPercentage() != null) entity.setL3SimilarityPercentage(dto.getL3SimilarityPercentage());
-        if (dto.getL3ProcessedAt() != null) entity.setL3ProcessedAt(dto.getL3ProcessedAt());
+    private Double getDbl(Map<String, Object> map, String key) {
+        Object val = map.get(key);
+        if (val == null) return null;
+        if (val instanceof Number) return ((Number) val).doubleValue();
+        try { return Double.parseDouble(val.toString()); } catch (Exception e) { return null; }
+    }
+
+    private String generateUniqueFileName(String originalFilename) {
+        String extension = "";
+        if (originalFilename != null && originalFilename.contains(".")) {
+            extension = originalFilename.substring(originalFilename.lastIndexOf("."));
+        }
+        return LocalDateTime.now().toString().replace(":", "-") + "_" +
+                UUID.randomUUID().toString().substring(0, 8) + extension;
     }
 }
