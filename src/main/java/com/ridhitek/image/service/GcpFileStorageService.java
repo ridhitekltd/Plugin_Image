@@ -34,7 +34,8 @@ public class GcpFileStorageService implements StorageService {
 
     @Override
     public String uploadFile(String candidateId, String stage, MultipartFile file) throws IOException {
-        String prefix = candidateId + "/" + stage + "/";
+        // Use same folder structure as main backend: images/candidate_{jobId}/{stage}/
+        String prefix = "images/candidate_" + candidateId + "/" + stage + "/";
         
         // For verification stages, ensure only one image exists by deleting previous ones
         String stageLower = stage.toLowerCase();
@@ -65,7 +66,8 @@ public class GcpFileStorageService implements StorageService {
     @Override
     public List<String> listFiles(String candidateId, String stage) {
         try {
-            String prefix = candidateId + "/" + stage + "/";
+            // Use same folder structure as main backend: images/candidate_{jobId}/{stage}/
+            String prefix = "images/candidate_" + candidateId + "/" + stage + "/";
             log.info("Listing files from GCS: bucket={}, prefix={}", bucketName, prefix);
             
             Iterable<Blob> blobs = storage.list(bucketName, 
@@ -76,10 +78,10 @@ public class GcpFileStorageService implements StorageService {
                 .map(blob -> getFileViewUrl(blob.getName()))
                 .collect(Collectors.toList());
             
-            log.info("Found {} images in GCS for {}/{}", fileUrls.size(), candidateId, stage);
+            log.info("Found {} images in GCS for candidate_{}/{}", fileUrls.size(), candidateId, stage);
             return fileUrls;
         } catch (Exception e) {
-            log.error("Failed to list files from GCS for {}/{}: {}", candidateId, stage, e.getMessage());
+            log.error("Failed to list files from GCS for candidate_{}/{}: {}", candidateId, stage, e.getMessage());
             return new ArrayList<>();
         }
     }
