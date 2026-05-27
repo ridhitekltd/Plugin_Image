@@ -28,35 +28,35 @@ public class ImageVerificationController {
     // --- Listing & Retrieval ---
 
     @GetMapping("/unverified-candidates")
-    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN', 'ROLE_MANAGER', 'ROLE_TEAM_LEAD', 'ROLE_RECRUITER')")
     public ResponseEntity<List<VerificationResultDto>> getUnverifiedCandidates() {
         log.info("Request for unverified candidates (Admin)");
         return ResponseEntity.ok(imageService.getUnverifiedCandidates());
     }
 
     @GetMapping("/verified-candidates")
-    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN', 'ROLE_MANAGER', 'ROLE_TEAM_LEAD', 'ROLE_RECRUITER')")
     public ResponseEntity<List<VerificationResultDto>> getVerifiedCandidates() {
         log.info("Request for verified candidates (Admin)");
         return ResponseEntity.ok(imageService.getVerifiedCandidates());
     }
 
     @GetMapping("/status/{candidateId}")
-    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN', 'ROLE_MANAGER', 'ROLE_TEAM_LEAD', 'ROLE_RECRUITER')")
     public ResponseEntity<VerificationResultDto> getVerificationStatus(@PathVariable String candidateId) {
         log.info("Request for verification status: {}", candidateId);
         return ResponseEntity.ok(imageService.getVerificationStatus(candidateId));
     }
 
     @GetMapping("/history/{candidateId}")
-    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN', 'ROLE_MANAGER', 'ROLE_TEAM_LEAD', 'ROLE_RECRUITER')")
     public ResponseEntity<List<VerificationOverrideDto>> getVerificationHistory(@PathVariable String candidateId) {
         log.info("Request for verification history: {}", candidateId);
         return ResponseEntity.ok(imageService.getVerificationHistory(candidateId));
     }
 
     @GetMapping("/photos/{candidateId}")
-    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN', 'ROLE_MANAGER', 'ROLE_TEAM_LEAD', 'ROLE_RECRUITER')")
     public ResponseEntity<Map<String, Object>> getCandidatePhotos(@PathVariable String candidateId) {
         log.info("Request for candidate photos: {}", candidateId);
         return ResponseEntity.ok(imageService.getCandidatePhotos(candidateId));
@@ -65,7 +65,7 @@ public class ImageVerificationController {
     // --- Photo Uploads ---
 
     @PostMapping("/{candidateId}/upload/{stage}")
-    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN', 'ROLE_MANAGER', 'ROLE_TEAM_LEAD', 'ROLE_RECRUITER')")
     public ResponseEntity<VerificationResultDto> uploadPhoto(
             @PathVariable String candidateId,
             @PathVariable String stage,
@@ -77,7 +77,7 @@ public class ImageVerificationController {
     // --- Overrides & Bulk ---
 
     @PostMapping("/override")
-    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN', 'ROLE_MANAGER', 'ROLE_TEAM_LEAD', 'ROLE_RECRUITER')")
     public ResponseEntity<VerificationResultDto> overrideStatus(
             @RequestBody VerificationOverrideRequestDto request, Principal principal) {
         String auditorId = principal != null ? principal.getName() : "ADMIN";
@@ -86,7 +86,7 @@ public class ImageVerificationController {
     }
 
     @PostMapping("/bulk-status-update")
-    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('SCOPE_admin', 'ROLE_ADMIN', 'ROLE_MANAGER', 'ROLE_TEAM_LEAD', 'ROLE_RECRUITER')")
     public ResponseEntity<List<VerificationResultDto>> bulkUpdate(@RequestBody List<VerificationResultDto> results) {
         log.info("Request for bulk status update");
         return ResponseEntity.ok(imageService.bulkUpdateVerificationStatus(results));

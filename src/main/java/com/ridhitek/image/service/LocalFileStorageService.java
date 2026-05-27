@@ -30,7 +30,8 @@ public class LocalFileStorageService implements StorageService {
 
     @Override
     public String uploadFile(String candidateId, String stage, MultipartFile file) throws IOException {
-        Path directory = Paths.get(baseDir, candidateId, stage);
+        String candidateDir = candidateId.startsWith("candidate_") ? candidateId : "candidate_" + candidateId;
+        Path directory = Paths.get(baseDir, candidateDir, stage);
         
         // If it's a verification stage, clear the directory first to ensure ONLY ONE image exists (Replacement)
         String stageLower = stage.toLowerCase();
@@ -52,7 +53,7 @@ public class LocalFileStorageService implements StorageService {
         Path filePath = directory.resolve(file.getOriginalFilename());
         Files.copy(file.getInputStream(), filePath);
         log.info("Saved locally: {}", filePath);
-        return candidateId + "/" + stage + "/" + file.getOriginalFilename();
+        return candidateDir + "/" + stage + "/" + file.getOriginalFilename();
     }
 
     @Override
@@ -64,13 +65,14 @@ public class LocalFileStorageService implements StorageService {
     @Override
     public List<String> listFiles(String candidateId, String stage) {
         try {
-            File dir = new File(baseDir + "/" + candidateId + "/" + stage);
+            String candidateDir = candidateId.startsWith("candidate_") ? candidateId : "candidate_" + candidateId;
+            File dir = new File(baseDir + "/" + candidateDir + "/" + stage);
             if (!dir.exists() || !dir.isDirectory()) return Collections.emptyList();
             File[] files = dir.listFiles();
             if (files == null) return Collections.emptyList();
             return Arrays.stream(files)
                     .filter(f -> f.isFile() && isImageFile(f.getName()))
-                    .map(f -> getFileViewUrl(candidateId + "/" + stage + "/" + f.getName()))
+                    .map(f -> getFileViewUrl(candidateDir + "/" + stage + "/" + f.getName()))
                     .collect(Collectors.toList());
         } catch (Exception e) {
             log.error("Error listing local files for {}/{}: {}", candidateId, stage, e.getMessage());
