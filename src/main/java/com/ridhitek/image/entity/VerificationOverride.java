@@ -6,7 +6,9 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "verification_overrides")
+@Table(name = "verification_overrides", indexes = {
+        @Index(name = "idx_verification_candidate_id", columnList = "candidate_id")
+})
 @Data
 @NoArgsConstructor
 public class VerificationOverride {
@@ -21,13 +23,16 @@ public class VerificationOverride {
     @Column(name = "tenant_id")
     private String tenantId;
 
+    @Column(name = "stage")
+    private String stage;
+
     @Column(name = "old_status")
     private String oldStatus;
 
     @Column(name = "new_status")
     private String newStatus;
 
-    @Column(name = "override_reason", length = 1000)
+    @Column(name = "override_reason", columnDefinition = "TEXT")
     private String overrideReason;
 
     @Column(name = "admin_user_id")

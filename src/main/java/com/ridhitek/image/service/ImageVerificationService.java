@@ -22,6 +22,7 @@ import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 @Slf4j
 @Service
@@ -33,6 +34,9 @@ public class ImageVerificationService implements IImageVerificationService {
 
     @Autowired
     private VerificationOverrideRepository overrideRepository;
+
+    @Autowired(required = false)
+    private JdbcTemplate jdbcTemplate;
     
     @Autowired(required = false)
     private StorageService storageService;
@@ -68,6 +72,15 @@ public class ImageVerificationService implements IImageVerificationService {
                 .orElse(VerificationResult.builder().candidateId(candidateId).build());
         
         updateEntityFromDto(result, resultDto);
+        
+        String resolvedTenantId = result.getTenantId();
+        if (resolvedTenantId == null || resolvedTenantId.trim().isEmpty()) {
+            resolvedTenantId = resolveTenantId();
+        }
+        if (resolvedTenantId != null && !resolvedTenantId.trim().isEmpty()) {
+            result.setTenantId(resolvedTenantId);
+        }
+        
         return mapToDto(verificationRepository.save(result));
     }
 
@@ -107,6 +120,14 @@ public class ImageVerificationService implements IImageVerificationService {
         if (hasL2) result.setL2VerificationStatus("PENDING_VERIFICATION");
         if (hasL3) result.setL3VerificationStatus("PENDING_VERIFICATION");
         
+        String resolvedTenantId = result.getTenantId();
+        if (resolvedTenantId == null || resolvedTenantId.trim().isEmpty()) {
+            resolvedTenantId = resolveTenantId();
+        }
+        if (resolvedTenantId != null && !resolvedTenantId.trim().isEmpty()) {
+            result.setTenantId(resolvedTenantId);
+        }
+        
         verificationRepository.save(result);
 
         Map<String, Object> response = new HashMap<>();
@@ -130,6 +151,14 @@ public class ImageVerificationService implements IImageVerificationService {
         if (subFolder.equals("l1")) result.setL1VerificationStatus("PENDING_VERIFICATION");
         if (subFolder.equals("l2")) result.setL2VerificationStatus("PENDING_VERIFICATION");
         if (subFolder.equals("l3")) result.setL3VerificationStatus("PENDING_VERIFICATION");
+
+        String resTenantId = result.getTenantId();
+        if (resTenantId == null || resTenantId.trim().isEmpty()) {
+            resTenantId = resolveTenantId();
+        }
+        if (resTenantId != null && !resTenantId.trim().isEmpty()) {
+            result.setTenantId(resTenantId);
+        }
 
         return mapToDto(verificationRepository.save(result));
     }
@@ -226,18 +255,103 @@ public class ImageVerificationService implements IImageVerificationService {
                 .orElseThrow(() -> new RuntimeException("Candidate verification not found"));
         
         String oldStatus = result.getVerificationStatus();
-        result.setVerificationStatus(request.getNewStatus());
+        String newStatus = request.getNewStatus();
+        String stage = request.getStage();
+        
+        result.setVerificationStatus(newStatus);
+        
+        if (stage != null) {
+            if ("L1_VS_L2".equalsIgnoreCase(stage)) {
+                result.setL1VerificationStatus(newStatus);
+                result.setL2VerificationStatus(newStatus);
+            } else if ("L2_VS_L3".equalsIgnoreCase(stage)) {
+                result.setL3VerificationStatus(newStatus);
+            } else if ("L1_VS_L3".equalsIgnoreCase(stage)) {
+                result.setL1VerificationStatus(newStatus);
+                result.setL3VerificationStatus(newStatus);
+            } else if ("ALL".equalsIgnoreCase(stage) || "L1_VS_L2_AND_L2_VS_L3".equalsIgnoreCase(stage)) {
+                result.setL1VerificationStatus(newStatus);
+                result.setL2VerificationStatus(newStatus);
+                result.setL3VerificationStatus(newStatus);
+            }
+        }
+        
+        String resolvedTenantId = request.getTenantId();
+        if (resolvedTenantId == null || resolvedTenantId.trim().isEmpty()) {
+            resolvedTenantId = result.getTenantId();
+        }
+        if (resolvedTenantId == null || resolvedTenantId.trim().isEmpty()) {
+            resolvedTenantId = resolveTenantId();
+        }
+        
+        if (resolvedTenantId != null && !resolvedTenantId.trim().isEmpty()) {
+            result.setTenantId(resolvedTenantId);
+        }
+        
         verificationRepository.save(result);
         
         VerificationOverride override = new VerificationOverride();
         override.setCandidateId(request.getCandidateId());
+        override.setTenantId(resolvedTenantId);
+        override.setStage(stage != null ? stage : "ALL");
         override.setOldStatus(oldStatus);
-        override.setNewStatus(request.getNewStatus());
+        override.setNewStatus(newStatus);
         override.setOverrideReason(request.getOverrideReason());
         override.setAdminUserId(auditorId);
         overrideRepository.save(override);
 
+        if (request.isFraudDetection() && "REJECTED".equalsIgnoreCase(newStatus)) {
+            if (jdbcTemplate != null) {
+                try {
+                    int candidateJobId = Integer.parseInt(request.getCandidateId());
+                    
+                    // 1. Update candidate_job_history status to Identity Mismatch and suspend profile
+                    String updateJobHistorySql = "UPDATE candidate_job_history SET candidate_status = 'Identity Mismatch', del_flag = true, last_modified_by = ?, last_modified_on = ? WHERE candidate_job_id = ?";
+                    jdbcTemplate.update(updateJobHistorySql, auditorId, LocalDateTime.now(), candidateJobId);
+                    log.info("Successfully updated candidate_job_history status to 'Identity Mismatch' and suspended profile for candidateJobId: {}", candidateJobId);
+                    
+                    // 2. Insert audit log comment
+                    String insertCommentSql = "INSERT INTO comments (candidate_job_id, comment_text, candidate_status, created_by, last_modified_by, created_on, last_modified_on, tenant_id) " +
+                            "VALUES (?, ?, 'Identity Mismatch', ?, ?, ?, ?, ?)";
+                    jdbcTemplate.update(insertCommentSql, candidateJobId, "Identity Mismatched status set via verification override: " + request.getOverrideReason(), auditorId, auditorId, LocalDateTime.now(), LocalDateTime.now(), resolvedTenantId);
+                    log.info("Successfully appended audit comment for candidateJobId: {}", candidateJobId);
+                    
+                    // 3. Cancel scheduled interviews
+                    String cancelInterviewsSql = "UPDATE interview_details SET del_flag = true, interview_status = 'Cancelled', feedback = ?, last_modified_by = ?, last_modified_on = ? WHERE candidate_job_id = ?";
+                    jdbcTemplate.update(cancelInterviewsSql, "Cancelled due to Identity Mismatch flagged on verification override.", auditorId, LocalDateTime.now(), candidateJobId);
+                    log.info("Successfully cancelled pending interviews for candidateJobId: {}", candidateJobId);
+                    
+                } catch (Exception e) {
+                    log.error("Failed to propagate Identity Mismatch override status to unique_people database for candidateJobId: {}", request.getCandidateId(), e);
+                }
+            }
+        }
+
         return mapToDto(result);
+    }
+
+    private String resolveTenantId() {
+        try {
+            Class<?> holderClass = Class.forName("com.ridhitek.backend.config.TenantContextHolder");
+            java.lang.reflect.Method getMethod = holderClass.getMethod("getTenantId");
+            String tenantId = (String) getMethod.invoke(null);
+            if (tenantId != null && !tenantId.trim().isEmpty()) {
+                return tenantId;
+            }
+        } catch (Throwable t) {
+            // Ignore
+        }
+        try {
+            Class<?> holderClass = Class.forName("com.uniquepeople.config.TenantContextHolder");
+            java.lang.reflect.Method getMethod = holderClass.getMethod("getTenantId");
+            String tenantId = (String) getMethod.invoke(null);
+            if (tenantId != null && !tenantId.trim().isEmpty()) {
+                return tenantId;
+            }
+        } catch (Throwable t) {
+            // Ignore
+        }
+        return null;
     }
 
     private Double formatMatchScore(Double score) {
@@ -276,6 +390,7 @@ public class ImageVerificationService implements IImageVerificationService {
         return VerificationOverrideDto.builder()
                 .candidateId(entity.getCandidateId())
                 .tenantId(entity.getTenantId())
+                .stage(entity.getStage())
                 .oldStatus(entity.getOldStatus())
                 .newStatus(entity.getNewStatus())
                 .overrideReason(entity.getOverrideReason())

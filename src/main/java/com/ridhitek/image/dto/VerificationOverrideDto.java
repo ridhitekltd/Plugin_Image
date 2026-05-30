@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 public class VerificationOverrideDto {
     private String candidateId;
     private String tenantId;
+    private String stage;
     private String oldStatus;
     private String newStatus;
     private String overrideReason;
