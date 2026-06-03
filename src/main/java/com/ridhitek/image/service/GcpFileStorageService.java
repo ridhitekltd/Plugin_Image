@@ -34,7 +34,7 @@ public class GcpFileStorageService implements StorageService {
 
     @Override
     public String uploadFile(String candidateId, String stage, MultipartFile file) throws IOException {
-        String prefix = candidateId + "/" + stage + "/";
+        String prefix = "images/candidate_" + candidateId + "/" + stage + "/";
         
         // For verification stages, ensure only one image exists by deleting previous ones
         String stageLower = stage.toLowerCase();
@@ -65,7 +65,7 @@ public class GcpFileStorageService implements StorageService {
     @Override
     public List<String> listFiles(String candidateId, String stage) {
         try {
-            String prefix = candidateId + "/" + stage + "/";
+            String prefix = "images/candidate_" + candidateId + "/" + stage + "/";
             log.info("Listing files from GCS: bucket={}, prefix={}", bucketName, prefix);
             
             Iterable<Blob> blobs = storage.list(bucketName, 
