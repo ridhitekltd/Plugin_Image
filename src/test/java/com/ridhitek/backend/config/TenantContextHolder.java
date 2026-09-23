@@ -7,11 +7,20 @@ package com.ridhitek.backend.config;
  * com.uniquepeople.config fallback lookup is what actually resolves by default;
  * tests can flip {@code tenantId} to simulate this holder resolving directly,
  * and must restore it to "" afterward.
+ * <p>
+ * {@code throwOnAccess} lets tests simulate the reflective lookup blowing up
+ * (e.g. a real-world classloader/version mismatch), which resolveTenantId()
+ * swallows via {@code catch (Throwable t)}. Tests that set it must restore it
+ * to {@code false} afterward.
  */
 public class TenantContextHolder {
     public static String tenantId = "";
+    public static boolean throwOnAccess = false;
 
     public static String getTenantId() {
+        if (throwOnAccess) {
+            throw new RuntimeException("simulated TenantContextHolder failure");
+        }
         return tenantId;
     }
 }

@@ -196,6 +196,96 @@ class ImageVerificationServiceTest {
         });
     }
 
+    @Test
+    void updateVerificationStatusSkipsStatusFieldWhenDtoStatusIsNull() {
+        VerificationResult existing = VerificationResult.builder().candidateId("1").tenantId("t1").verificationStatus("OLD").build();
+        when(verificationRepository.findById("1")).thenReturn(Optional.of(existing));
+        // verificationStatus intentionally left null; only another field is set.
+        VerificationResultDto dto = VerificationResultDto.builder().matchScore(77.0).build();
+
+        VerificationResultDto result = service.updateVerificationStatus("1", dto);
+
+        assertThat(result.getVerificationStatus()).isEqualTo("OLD");
+        assertThat(result.getMatchScore()).isEqualTo(77.0);
+    }
+
+    // --- resolveTenantId (reflective TenantContextHolder lookups) ---
+
+    @Test
+    void resolveTenantIdUsesRidhitekBackendHolderWhenNonBlank() {
+        com.ridhitek.backend.config.TenantContextHolder.tenantId = "ridhitek-tenant";
+        try {
+            when(verificationRepository.findById("1")).thenReturn(Optional.empty());
+            VerificationResultDto dto = VerificationResultDto.builder().verificationStatus("VERIFIED").build();
+
+            VerificationResultDto result = service.updateVerificationStatus("1", dto);
+
+            assertThat(result.getTenantId()).isEqualTo("ridhitek-tenant");
+        } finally {
+            com.ridhitek.backend.config.TenantContextHolder.tenantId = "";
+        }
+    }
+
+    @Test
+    void resolveTenantIdFallsBackToUniquepeopleHolderWhenRidhitekHolderIsNull() {
+        com.ridhitek.backend.config.TenantContextHolder.tenantId = null;
+        try {
+            when(verificationRepository.findById("1")).thenReturn(Optional.empty());
+            VerificationResultDto dto = VerificationResultDto.builder().verificationStatus("VERIFIED").build();
+
+            VerificationResultDto result = service.updateVerificationStatus("1", dto);
+
+            assertThat(result.getTenantId()).isEqualTo("resolved-tenant");
+        } finally {
+            com.ridhitek.backend.config.TenantContextHolder.tenantId = "";
+        }
+    }
+
+    @Test
+    void resolveTenantIdFallsBackToUniquepeopleHolderWhenRidhitekHolderThrows() {
+        com.ridhitek.backend.config.TenantContextHolder.throwOnAccess = true;
+        try {
+            when(verificationRepository.findById("1")).thenReturn(Optional.empty());
+            VerificationResultDto dto = VerificationResultDto.builder().verificationStatus("VERIFIED").build();
+
+            VerificationResultDto result = service.updateVerificationStatus("1", dto);
+
+            assertThat(result.getTenantId()).isEqualTo("resolved-tenant");
+        } finally {
+            com.ridhitek.backend.config.TenantContextHolder.throwOnAccess = false;
+        }
+    }
+
+    @Test
+    void resolveTenantIdReturnsNullWhenUniquepeopleHolderIsNull() {
+        com.uniquepeople.config.TenantContextHolder.tenantId = null;
+        try {
+            when(verificationRepository.findById("1")).thenReturn(Optional.empty());
+            VerificationResultDto dto = VerificationResultDto.builder().verificationStatus("VERIFIED").build();
+
+            VerificationResultDto result = service.updateVerificationStatus("1", dto);
+
+            assertThat(result.getTenantId()).isNull();
+        } finally {
+            com.uniquepeople.config.TenantContextHolder.tenantId = "resolved-tenant";
+        }
+    }
+
+    @Test
+    void resolveTenantIdReturnsNullWhenUniquepeopleHolderThrows() {
+        com.uniquepeople.config.TenantContextHolder.throwOnAccess = true;
+        try {
+            when(verificationRepository.findById("1")).thenReturn(Optional.empty());
+            VerificationResultDto dto = VerificationResultDto.builder().verificationStatus("VERIFIED").build();
+
+            VerificationResultDto result = service.updateVerificationStatus("1", dto);
+
+            assertThat(result.getTenantId()).isNull();
+        } finally {
+            com.uniquepeople.config.TenantContextHolder.throwOnAccess = false;
+        }
+    }
+
     // --- bulkUpdateVerificationStatus ---
 
     @Test
@@ -481,6 +571,23 @@ class ImageVerificationServiceTest {
     }
 
     @Test
+    void uploadSingleFileHandlesNullListFilesWhenStagePathIsActuallyAFile() throws IOException {
+        // Pre-create the l1 stage path as a plain file (not a directory). dir.exists() is true
+        // but dir.listFiles() returns null since it isn't a directory, covering the false branch
+        // of "if (existingFiles != null)" in the replacement-clearing logic. The subsequent
+        // Files.write() then fails because the parent path isn't a directory, which the method
+        // wraps into a RuntimeException like any other IOException.
+        Path stagePath = tempDir.resolve("candidate_1/l1");
+        Files.createDirectories(stagePath.getParent());
+        Files.write(stagePath, "not a directory".getBytes());
+        MultipartFile file = new MockMultipartFile("file", "new.jpg", "image/jpeg", "new".getBytes());
+
+        assertThatThrownBy(() -> service.uploadSingleFile("1", "l1", file))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("File upload failed");
+    }
+
+    @Test
     void uploadSingleFileWrapsIOExceptionAsRuntimeException() throws IOException {
         MultipartFile file = mock(MultipartFile.class);
         when(file.isEmpty()).thenReturn(false);
@@ -703,6 +810,25 @@ class ImageVerificationServiceTest {
         ArgumentCaptor<VerificationOverride> captor = ArgumentCaptor.forClass(VerificationOverride.class);
         verify(overrideRepository).save(captor.capture());
         assertThat(captor.getValue().getTenantId()).isEqualTo("entity-tenant");
+    }
+
+    @Test
+    void overrideVerificationStatusReResolvesWhenEntityTenantFallbackIsBlankString() {
+        // request.getTenantId() is null (absent) so resolvedTenantId falls back to
+        // result.getTenantId(), which here is "" (non-null but blank) rather than null. That
+        // exercises the (resolvedTenantId == null || resolvedTenantId.trim().isEmpty()) guard's
+        // "non-null but blank" branch, which then triggers the resolveTenantId() fallback.
+        VerificationResult existing = VerificationResult.builder().candidateId("1").tenantId("").build();
+        when(verificationRepository.findById("1")).thenReturn(Optional.of(existing));
+        VerificationOverrideRequestDto request = new VerificationOverrideRequestDto();
+        request.setCandidateId("1");
+        request.setNewStatus("VERIFIED");
+
+        service.overrideVerificationStatus(request, "admin");
+
+        ArgumentCaptor<VerificationOverride> captor = ArgumentCaptor.forClass(VerificationOverride.class);
+        verify(overrideRepository).save(captor.capture());
+        assertThat(captor.getValue().getTenantId()).isEqualTo("resolved-tenant");
     }
 
     @Test

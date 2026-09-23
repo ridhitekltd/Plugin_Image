@@ -7,11 +7,19 @@ package com.uniquepeople.config;
  * resolvable value; tests that need resolveTenantId() to fail entirely (both
  * holders blank) must set this to "" too, and restore it to "resolved-tenant"
  * afterward so other tests aren't affected.
+ * <p>
+ * {@code throwOnAccess} lets tests simulate the reflective lookup blowing up,
+ * which resolveTenantId() swallows via {@code catch (Throwable t)}. Tests that
+ * set it must restore it to {@code false} afterward.
  */
 public class TenantContextHolder {
     public static String tenantId = "resolved-tenant";
+    public static boolean throwOnAccess = false;
 
     public static String getTenantId() {
+        if (throwOnAccess) {
+            throw new RuntimeException("simulated TenantContextHolder failure");
+        }
         return tenantId;
     }
 }
