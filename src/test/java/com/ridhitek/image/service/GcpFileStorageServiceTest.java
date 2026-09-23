@@ -5,8 +5,10 @@ import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.StorageOptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -131,5 +133,25 @@ class GcpFileStorageServiceTest {
                 .thenThrow(new RuntimeException("GCS unavailable"));
 
         assertThat(service.listFiles("1", "id")).isEmpty();
+    }
+
+    @Test
+    void constructorResolvesStorageClientFromDefaultOptions() {
+        // Covers the instance field initializer (private final Storage storage =
+        // StorageOptions.getDefaultInstance().getService();) that every other test in this class
+        // deliberately bypasses (see the class javadoc). Static-mocking StorageOptions lets us
+        // exercise the real constructor without hitting actual GCP credentials/network.
+        try (MockedStatic<StorageOptions> mockedStatic = mockStatic(StorageOptions.class)) {
+            StorageOptions options = mock(StorageOptions.class);
+            Storage resolvedStorage = mock(Storage.class);
+            mockedStatic.when(StorageOptions::getDefaultInstance).thenReturn(options);
+            when(options.getService()).thenReturn(resolvedStorage);
+
+            GcpFileStorageService realService = new GcpFileStorageService();
+
+            assertThat(realService).isNotNull();
+            assertThat(ReflectionTestUtils.getField(realService, "storage")).isSameAs(resolvedStorage);
+            mockedStatic.verify(StorageOptions::getDefaultInstance);
+        }
     }
 }

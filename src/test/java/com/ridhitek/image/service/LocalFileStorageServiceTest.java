@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LocalFileStorageServiceTest {
 
@@ -157,5 +158,35 @@ class LocalFileStorageServiceTest {
         Files.write(notADir, "data".getBytes());
 
         assertThat(service.listFiles("1", "id")).isEmpty();
+    }
+
+    @Test
+    void listFilesReturnsEmptyArrayListWhenCandidateIdIsNull() {
+        // candidateId.startsWith(...) throws a NullPointerException, which listFiles()
+        // catches via its broad catch (Exception e) block, logging and returning [].
+        assertThat(service.listFiles(null, "id")).isEmpty();
+    }
+
+    // NOTE: listFiles()'s "if (files == null)" branch (dir.exists() && dir.isDirectory() both
+    // true, yet dir.listFiles() returns null) is not covered. Real filesystems only return null
+    // there on an I/O error, which can't be reliably reproduced without either changing
+    // production code to accept an injectable File/filesystem abstraction, or using Mockito's
+    // mockConstruction(File.class) to intercept `new File(...)`. The latter was tried and
+    // crashes the forked surefire JVM in this environment (ByteBuddy/inline-mock-maker
+    // instrumenting the JDK bootstrap class java.io.File triggers a NullPointerException during
+    // JUnit launcher shutdown), so it was reverted rather than leaving a flaky/unsafe test.
+
+    @Test
+    void uploadFileThrowsWhenStageDirectoryIsActuallyAFile() throws IOException {
+        // Pre-create the l1 stage path as a plain file (not a directory). Files.exists() is
+        // true but directory.toFile().listFiles() returns null since it isn't a directory,
+        // covering the false branch of "if (files != null)" during the replacement-clearing logic.
+        Path stagePath = tempDir.resolve("candidate_1/l1");
+        Files.createDirectories(stagePath.getParent());
+        Files.write(stagePath, "not a directory".getBytes());
+        MultipartFile file = new MockMultipartFile("file", "new.jpg", "image/jpeg", "new".getBytes());
+
+        assertThatThrownBy(() -> service.uploadFile("1", "l1", file))
+                .isInstanceOf(IOException.class);
     }
 }
